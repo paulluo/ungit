@@ -1,123 +1,142 @@
-var expect = require('expect.js');
-var request = require('supertest');
-var _ = require('underscore');
-var express = require('express');
-var fs = require('fs');
-var path = require('path');
-var async = require('async');
-var child_process = require('child_process');
-var async = require('async');
-var restGit = require('../source/git-api');
-var common = require('./common.js');
-var wrapErrorHandler = common.wrapErrorHandler;
+const expect = require('expect.js');
+const request = require('supertest');
+const express = require('express');
+const path = require('path');
+const restGit = require('../src/git-api');
+const common = require('./common-es6.js');
 
-var app = express();
+const app = express();
+app.use(require('body-parser').json());
 
-restGit.registerApi(app, null, null, { dev: true });
+restGit.registerApi({ app: app, config: { dev: true } });
 
-var req = request(app);
+const req = request(app);
 
-describe('git-api diff', function () {
+describe('git-api diff', () => {
+  let testDir, testBareDir;
 
-	var testDir;
+  before(() => {
+    return common.initRepo(req)
+      .then((dir) => testDir = dir)
+      .then(() => common.initRepo(req, { bare: true }))
+      .then((dir) => testBareDir = testBareDir)
+  });
+  after(() => common.post(req, '/testing/cleanup', undefined));
 
-	before(function(done) {
-		common.createEmptyRepo(req, done, function(dir) {
-			testDir = dir;
-			done();
-		});
-	});
+  const testFile = 'afile.txt';
+  const testImage = 'icon.png'
 
-	var testFile = 'afile.txt';
+  it('diff on non existing file should fail', () => {
+    return common.get(req, '/diff', { path: testDir, file: testFile });
+  });
 
-	it('diff on non existing file should fail', function(done) {
-		req
-			.get(restGit.pathPrefix + '/diff')
-			.query({ path: testDir, file: testFile })
-			.set('Accept', 'application/json')
-			.expect('Content-Type', /json/)
-			.expect(400)
-			.end(wrapErrorHandler(done));
-	});
+  let content;
 
-	var content;
+  it('should be possible to create a file', () => {
+    content = ['A', 'few', 'lines', 'of', 'content', ''];
 
-	it('should be possible to create a file', function(done) {
-		content = ['A', 'few', 'lines', 'of', 'content', ''];
-		common.post(req, '/testing/createfile', { file: path.join(testDir, testFile), content: content.join('\n') }, done);
-	});
+    return common.post(req, '/testing/createfile', { file: path.join(testDir, testFile), content: content.join('\n') });
+  });
 
-	it('diff on created file should work', function(done) {
-		common.get(req, '/diff', { path: testDir, file: testFile }, done, function(err, res) {
-			expect(res.body).to.be.an('array');
-			expect(res.body.length).to.be(1);
-			expect(res.body[0].lines).to.be.an('array');
-			expect(res.body[0].lines.length).to.be(content.length);
-			for(var i = 0; i < res.body[0].lines.length; i++) {
-				var contentLine = content[i];
-				var diffLine = res.body[0].lines[i];
-				expect(diffLine).to.eql([null, i, '+' + contentLine]);
-			}
-			done();
-		});
-	});
+  it('should be possible to create an image file', () => {
+    return common.post(req, '/testing/createimagefile', { file: path.join(testDir, testImage) });
+  });
 
-	it('should be possible to commit a file', function(done) {
-		common.post(req, '/commit', { path: testDir, message: "Init", files: [testFile] }, done);
-	});
+  it('diff on created file should work', () => {
+    return common.get(req, '/diff', { path: testDir, file: testFile }).then((res) => {
+      for(let i = 0; i < content.length; i++) {
+        expect(res.indexOf(content[i])).to.be.above(-1);
+      }
+    });
+  });
 
-	it('diff on commited file should work', function(done) {
-		common.get(req, '/diff', { path: testDir, file: testFile }, done, function(err, res) {
-			expect(res.body).to.be.an('array');
-			expect(res.body.length).to.be(0);
-			done();
-		});
-	});
+  it('diff on image file should work', () => {
+    return common.getPng(req, '/diff/image', { path: testDir, filename: testImage, version: 'current' })
+      .then((res) => expect(res.toString()).to.be('png'));
+  });
 
-	it('should be possible to modify a file', function(done) {
-		content.splice(2, 0, 'more');
-		common.post(req, '/testing/changefile', { file: path.join(testDir, testFile), content: content.join('\n') }, done);
-	});
+  it('should be possible to commit a file', () => {
+    return common.post(req, '/commit', { path: testDir, message: "Init", files: [{ name: testFile }] });
+  });
+  it('should be possible to commit an image file', () => {
+    return common.post(req, '/commit', { path: testDir, message: "Init", files: [{ name: testImage }] });
+  });
 
-	it('diff on modified file should work', function(done) {
-		common.get(req, '/diff', { path: testDir, file: testFile }, done, function(err, res) {
-			expect(res.body).to.be.an('array');
-			expect(res.body.length).to.be(1);
-			expect(res.body[0].lines).to.be.an('array');
-			expect(res.body[0].lines).to.eql([
-				[ null, null, '@@ -1,5 +1,6 @@' ],
-				[ 1, 1, ' A' ],
-				[ 2, 2, ' few' ],
-				[ null, 3, '+more' ],
-				[ 3, 4, ' lines' ],
-				[ 4, 5, ' of' ],
-				[ 5, 6, ' content' ]
-			]);
-			done();
-		});
-	});
+  it('diff on commited file should work', () => {
+    return common.get(req, '/diff', { path: testDir, file: testFile }).then((res) => {
+      expect(res).to.be.an('array');
+      expect(res.length).to.be(0);
+    });
+  });
 
-	it('should be possible to commit a file', function(done) {
-		common.post(req, '/commit', { path: testDir, message: "Init", files: [testFile] }, done);
-	});
+  it('diff on commited image file should work', () => {
+    return common.getPng(req, '/diff/image', { path: testDir, filename: testImage, version: 'current' })
+      .then((res) => expect(res.toString()).to.be('png'));
+  });
 
-	it('removing a test file should work', function(done) {
-		common.post(req, '/testing/removefile', { file: path.join(testDir, testFile) }, done);
-	});
+  it('should be possible to modify a file', () => {
+    content.splice(2, 0, 'more');
+    return common.post(req, '/testing/changefile', { file: path.join(testDir, testFile), content: content.join('\n') });
+  });
 
-	it('diff on removed file should work', function(done) {
-		common.get(req, '/diff', { path: testDir, file: testFile }, done, function(err, res) {
-			expect(res.body).to.be.an('array');
-			expect(res.body.length).to.be.greaterThan(0);
-			expect(res.body[0].lines).to.be.an('array');
-			expect(res.body[0].lines.length).to.be.greaterThan(0);
-			done();
-		});
-	});
+  it('should be possible to modify an image file', () => {
+    return common.post(req, '/testing/changeimagefile', { file: path.join(testDir, testImage) });
+  });
 
+  it('diff on modified file should work', () => {
+    return common.get(req, '/diff', { path: testDir, file: testFile }).then((res) => {
+      expect(res.indexOf('diff --git a/afile.txt b/afile.txt')).to.be.above(-1);
+      expect(res.indexOf('+more')).to.be.above(-1);
+    });
+  });
 
-	after(function(done) {
-		common.post(req, '/testing/cleanup', undefined, done);
-	});
+  it('getting current image file should work', () => {
+    return common.getPng(req, '/diff/image', { path: testDir, filename: testImage, version: 'current' })
+      .then((res) => expect(res.toString()).to.be('png ~~'));
+  });
 
+  it('getting previous image file should work', () => {
+    return common.getPng(req, '/diff/image', { path: testDir, filename: testImage, version: 'HEAD' })
+      .then((res) => expect(res.toString()).to.be('png'));
+  });
+
+  it('should be possible to commit a file', () => {
+    return common.post(req, '/commit', { path: testDir, message: "Init", files: [{ name: testFile }] });
+  });
+
+  it('removing a test file should work', () => {
+    return common.post(req, '/testing/removefile', { file: path.join(testDir, testFile) });
+  });
+
+  it('should be possible to commit an image file', () => {
+    return common.post(req, '/commit', { path: testDir, message: "Init", files: [{ name: testImage }] });
+  });
+  it('removing a test image file should work', () => {
+    return common.post(req, '/testing/removefile', { file: path.join(testDir, testImage) });
+  });
+
+  it('diff on removed file should work', () => {
+    return common.get(req, '/diff', { path: testDir, file: testFile })
+      .then((res) => {
+        expect(res.indexOf('deleted file')).to.be.above(-1);
+        expect(res.indexOf("@@ -1,6 +0,0 @@")).to.be.above(-1);
+      });
+  });
+
+  it('getting previous image file should work', () => {
+    return common.getPng(req, '/diff/image', { path: testDir, filename: testImage, version: 'HEAD' })
+      .then((res) => expect(res.toString()).to.be('png ~~'));
+  });
+
+  it('diff on bare repository file should work', () => {
+    // first add remote and push all commits
+    return common.post(req, '/remotes/barerepository', { path: testDir, url: testBareDir })
+      .then(() => common.post(req, '/push', { path: testDir, remote: 'barerepository' }))
+      .then(() => common.get(req, '/log', { path: testDir }))
+      .then((res) => {
+        // find a commit which contains the testFile
+        const commit = res.nodes.filter((commit) => commit.fileLineDiffs.some((lineDiff) => lineDiff[2] == testFile))[0];
+        return common.get(req, '/diff', { path: testDir, sha1: commit.sha1, file: testFile })
+      });
+  });
 });
